@@ -322,6 +322,134 @@ LEFT JOIN account_journal aj ON aj.id = ap.journal_id;
 
 
 -- --------------------------------------------------------------------------
+-- Vista: POS - Ordenes del Punto de Venta con detalle
+-- --------------------------------------------------------------------------
+CREATE OR REPLACE VIEW bi_pos_ventas AS
+SELECT
+    pol.id AS line_id,
+    po.id AS order_id,
+    po.name AS order_name,
+    po.state AS order_state,
+    po.date_order,
+    po.pos_reference,
+
+    -- Sesion / Config
+    po.session_id,
+    ps.name AS session_name,
+    pc.id AS config_id,
+    pc.name AS pos_name,
+
+    -- Cliente
+    rp.id AS partner_id,
+    rp.name AS partner_name,
+
+    -- Producto
+    pol.product_id,
+    pt.name AS product_name,
+    pcat.name AS product_category,
+
+    -- Metricas linea
+    pol.qty,
+    pol.price_unit,
+    pol.price_cost,
+    pol.discount,
+    pol.price_subtotal,
+    pol.price_subtotal_incl,
+
+    -- Totales orden
+    po.amount_total AS order_total,
+    po.amount_tax AS order_tax,
+    po.amount_paid AS order_paid,
+    po.amount_return AS order_return,
+
+    -- Vendedor
+    po.user_id,
+    ru.name AS cashier_name,
+    po.employee_id,
+    po.company_id,
+    po.currency_id,
+
+    po.is_invoiced,
+    po.create_date
+
+FROM pos_order_line pol
+JOIN pos_order po ON po.id = pol.order_id
+LEFT JOIN pos_session ps ON ps.id = po.session_id
+LEFT JOIN pos_config pc ON pc.id = po.config_id
+LEFT JOIN res_partner rp ON rp.id = po.partner_id
+LEFT JOIN product_product pp ON pp.id = pol.product_id
+LEFT JOIN product_template pt ON pt.id = pp.product_tmpl_id
+LEFT JOIN product_category pcat ON pcat.id = pt.categ_id
+LEFT JOIN res_users ru ON ru.id = po.user_id;
+
+
+-- --------------------------------------------------------------------------
+-- Vista: POS - Pagos por metodo
+-- --------------------------------------------------------------------------
+CREATE OR REPLACE VIEW bi_pos_pagos AS
+SELECT
+    ppay.id,
+    ppay.pos_order_id,
+    po.name AS order_name,
+    po.date_order,
+    ppay.amount,
+    ppay.payment_date,
+
+    ppm.id AS payment_method_id,
+    ppm.name AS payment_method_name,
+    ppm.is_cash_count,
+
+    po.session_id,
+    ps.name AS session_name,
+    pc.name AS pos_name,
+
+    rp.id AS partner_id,
+    rp.name AS partner_name,
+
+    ppay.company_id,
+    ppay.currency_id
+
+FROM pos_payment ppay
+JOIN pos_order po ON po.id = ppay.pos_order_id
+LEFT JOIN pos_payment_method ppm ON ppm.id = ppay.payment_method_id
+LEFT JOIN pos_session ps ON ps.id = ppay.session_id
+LEFT JOIN pos_config pc ON pc.id = ps.config_id
+LEFT JOIN res_partner rp ON rp.id = po.partner_id;
+
+
+-- --------------------------------------------------------------------------
+-- Vista: POS - Resumen por sesion
+-- --------------------------------------------------------------------------
+CREATE OR REPLACE VIEW bi_pos_sesiones AS
+SELECT
+    ps.id,
+    ps.name,
+    ps.state,
+    ps.start_at,
+    ps.stop_at,
+    ps.stop_at - ps.start_at AS duration,
+
+    pc.id AS config_id,
+    pc.name AS pos_name,
+
+    ru.id AS user_id,
+    ru.name AS cashier_name,
+
+    ps.order_count,
+    ps.total_payments_amount,
+    ps.cash_register_balance_start,
+    ps.cash_register_balance_end_real,
+    ps.cash_register_balance_end_real - ps.cash_register_balance_start AS cash_difference,
+
+    ps.company_id,
+    ps.create_date
+
+FROM pos_session ps
+LEFT JOIN pos_config pc ON pc.id = ps.config_id
+LEFT JOIN res_users ru ON ru.id = ps.user_id;
+
+
+-- --------------------------------------------------------------------------
 -- Vista: Resumen de estado de sincronización
 -- --------------------------------------------------------------------------
 CREATE OR REPLACE VIEW bi_sync_status AS

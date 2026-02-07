@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Modelos - Odoo BI Portal{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0"><i class="bi bi-table"></i> Modelos configurados</h5>
+    <div class="d-flex gap-2">
+        <input type="text" id="model-search" class="form-control form-control-sm" placeholder="Buscar modelo..." style="width:250px"
+               onkeyup="filterModels()">
+    </div>
+</div>
+
+<!-- Agrupados por área -->
+{% set areas = {
+    1: "Maestros / Configuracion",
+    2: "Contactos",
+    3: "Productos",
+    10: "Ventas",
+    11: "Compras",
+    20: "Contabilidad",
+    21: "Pagos",
+    30: "Inventario",
+    40: "CRM",
+    50: "Recursos Humanos",
+    60: "Punto de Venta (POS)",
+    61: "Punto de Venta (POS)",
+    62: "Punto de Venta (POS)"
+} %}
+
+{% set ns = namespace(current_area="") %}
+{% for m in models | sort(attribute='priority') %}
+
+{% set area_name = areas.get(m.priority, "Otros (prioridad " ~ m.priority ~ ")") %}
+{% if area_name != ns.current_area %}
+{% set ns.current_area = area_name %}
+<h6 class="text-muted mt-4 mb-2 border-bottom pb-2 area-header">
+    {{ area_name }}
+    <small class="text-muted">(prioridad {{ m.priority }})</small>
+</h6>
+{% endif %}
+
+<div class="card border-0 shadow-sm mb-2 model-card" data-model="{{ m.odoo_model }}" data-table="{{ m.pg_table }}">
+    <div class="card-body py-2 px-3">
+        <div class="row align-items-center">
+            <div class="col-md-3">
+                <a href="{{ url_for('model_detail', model_name=m.odoo_model) }}" class="text-decoration-none">
+                    <code class="fs-6">{{ m.odoo_model }}</code>
+                </a>
+                {% if not m.enabled %}
+                <span class="badge bg-secondary ms-1">Deshabilitado</span>
+                {% endif %}
+            </div>
+            <div class="col-md-2">
+                <small class="text-muted">
+                    <i class="bi bi-arrow-right"></i> <code>{{ m.pg_table }}</code>
+                </small>
+            </div>
+            <div class="col-md-1 text-center">
+                <span class="badge bg-dark">{{ m.fields_count }} campos</span>
+            </div>
+            <div class="col-md-1 text-center">
+                {% if m.incremental %}
+                <span class="badge bg-outline-info border border-info text-info" title="Sync incremental">
+                    <i class="bi bi-lightning"></i> Incr.
+                </span>
+                {% else %}
+                <span class="badge bg-outline-warning border border-warning text-warning" title="Sync completa cada vez">
+                    <i class="bi bi-arrow-clockwise"></i> Full
+                </span>
+                {% endif %}
+            </div>
+            <div class="col-md-1 text-end">
+                {% if m.row_count is not none %}
+                <strong>{{ m.row_count | number_format }}</strong>
+                <small class="text-muted d-block">filas</small>
+                {% else %}
+                <span class="text-muted">—</span>
+                {% endif %}
+            </div>
+            <div class="col-md-2 text-center">
+                {% if m.status == 'success' %}
+                <span class="badge bg-success"><i class="bi bi-check-circle"></i> OK</span>
+                {% elif m.status == 'error' %}
+                <span class="badge bg-danger" title="{{ m.error_message }}">
+                    <i class="bi bi-x-circle"></i> Error
+                </span>
+                {% elif m.status == 'skipped' %}
+                <span class="badge bg-secondary"><i class="bi bi-skip-forward"></i> Omitido</span>
+                {% else %}
+                <span class="badge bg-dark"><i class="bi bi-clock"></i> Sin sync</span>
+                {% endif %}
+            </div>
+            <div class="col-md-2 text-end">
+                {% if m.last_sync %}
+                <small class="text-muted">{{ m.last_sync | dt_format }}</small>
+                {% endif %}
+                <button class="btn btn-sm btn-outline-primary ms-2"
+                        onclick="syncModel('{{ m.odoo_model }}')" title="Sincronizar">
+                    <i class="bi bi-arrow-repeat"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterModels() {
+    const q = document.getElementById('model-search').value.toLowerCase();
+    document.querySelectorAll('.model-card').forEach(card => {
+        const model = card.dataset.model.toLowerCase();
+        const table = card.dataset.table.toLowerCase();
+        card.style.display = (model.includes(q) || table.includes(q)) ? '' : 'none';
+    });
+    // Show/hide area headers
+    document.querySelectorAll('.area-header').forEach(header => {
+        let next = header.nextElementSibling;
+        let hasVisible = false;
+        while (next && !next.classList.contains('area-header')) {
+            if (next.classList.contains('model-card') && next.style.display !== 'none') {
+                hasVisible = true;
+                break;
+            }
+            next = next.nextElementSibling;
+        }
+        header.style.display = hasVisible || !q ? '' : 'none';
+    });
+}
+</script>
+{% endblock %}

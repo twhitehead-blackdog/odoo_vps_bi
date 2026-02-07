@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Odoo BI Portal{% endblock %}
+
+{% block content %}
+<!-- KPI Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-sm-6 col-xl-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="text-muted mb-1 small">Base de datos</p>
+                        <h5 class="mb-0">
+                            {% if db_connected %}
+                            <span class="text-success">Conectada</span>
+                            {% else %}
+                            <span class="text-danger">Sin conexion</span>
+                            {% endif %}
+                        </h5>
+                    </div>
+                    <div class="kpi-icon {{ 'bg-success' if db_connected else 'bg-danger' }}">
+                        <i class="bi bi-{{ 'check-circle' if db_connected else 'x-circle' }}"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="text-muted mb-1 small">Modelos sincronizados</p>
+                        <h4 class="mb-0">{{ synced_models }} <small class="text-muted fs-6">/ {{ total_models }}</small></h4>
+                        {% if error_models > 0 %}
+                        <small class="text-danger">{{ error_models }} con error</small>
+                        {% endif %}
+                        {% if skipped_models > 0 %}
+                        <small class="text-warning">{{ skipped_models }} omitidos</small>
+                        {% endif %}
+                    </div>
+                    <div class="kpi-icon bg-primary">
+                        <i class="bi bi-table"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="text-muted mb-1 small">Registros totales</p>
+                        <h4 class="mb-0">{{ total_records | number_format }}</h4>
+                    </div>
+                    <div class="kpi-icon bg-info">
+                        <i class="bi bi-collection"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="text-muted mb-1 small">Ultima sincronizacion</p>
+                        <h5 class="mb-0">
+                            {% if last_sync %}
+                            {{ last_sync | dt_format("%H:%M:%S") }}
+                            {% else %}
+                            <span class="text-muted">Nunca</span>
+                            {% endif %}
+                        </h5>
+                        {% if last_sync %}
+                        <small class="text-muted">{{ last_sync | dt_format("%Y-%m-%d") }}</small>
+                        {% endif %}
+                    </div>
+                    <div class="kpi-icon bg-warning">
+                        <i class="bi bi-clock-history"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Sync status banner -->
+{% if sync_running %}
+<div class="alert alert-info d-flex align-items-center mb-4">
+    <span class="spinner-border spinner-border-sm me-2"></span>
+    <strong>Sincronizacion en curso...</strong>
+    <a href="#" class="ms-3" onclick="showSyncModal(); return false;">Ver progreso</a>
+</div>
+{% endif %}
+
+<!-- Sync Log Table -->
+<div class="card border-0 shadow-sm">
+    <div class="card-header bg-transparent d-flex justify-content-between align-items-center">
+        <h6 class="mb-0"><i class="bi bi-list-check"></i> Estado por modelo</h6>
+        <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()">
+            <i class="bi bi-arrow-clockwise"></i>
+        </button>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Estado</th>
+                        <th>Modelo Odoo</th>
+                        <th>Tabla PG</th>
+                        <th class="text-end">Registros</th>
+                        <th class="text-end">Filas en DB</th>
+                        <th class="text-end">Duracion</th>
+                        <th>Ultima sync</th>
+                        <th>Hace</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in sync_log %}
+                    <tr>
+                        <td>
+                            {% if entry.status == 'success' %}
+                            <span class="badge bg-success"><i class="bi bi-check-circle"></i> OK</span>
+                            {% elif entry.status == 'error' %}
+                            <span class="badge bg-danger" title="{{ entry.error_message }}">
+                                <i class="bi bi-x-circle"></i> Error
+                            </span>
+                            {% elif entry.status == 'skipped' %}
+                            <span class="badge bg-secondary"><i class="bi bi-skip-forward"></i> Omitido</span>
+                            {% else %}
+                            <span class="badge bg-warning">{{ entry.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{{ url_for('model_detail', model_name=entry.model_name) }}" class="text-decoration-none">
+                                <code>{{ entry.model_name }}</code>
+                            </a>
+                        </td>
+                        <td><code class="text-muted">{{ entry.pg_table }}</code></td>
+                        <td class="text-end">{{ entry.records_synced | number_format }}</td>
+                        <td class="text-end">
+                            {% if entry.row_count is not none %}
+                            {{ entry.row_count | number_format }}
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">{{ "%.1f" | format(entry.duration_seconds) }}s</td>
+                        <td>{{ entry.last_sync | dt_format }}</td>
+                        <td>
+                            <span class="text-muted">{{ entry.time_since_sync | timedelta_short }}</span>
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-primary"
+                                    onclick="syncModel('{{ entry.model_name }}')"
+                                    title="Sincronizar este modelo">
+                                <i class="bi bi-arrow-repeat"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not sync_log %}
+                    <tr>
+                        <td colspan="9" class="text-center text-muted py-4">
+                            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                            No hay datos de sincronizacion aun.<br>
+                            Ejecuta <code>python run_sync.py --full</code> o usa el boton <strong>Full Sync</strong>.
+                        </td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
