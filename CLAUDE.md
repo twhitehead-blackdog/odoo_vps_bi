@@ -2,234 +2,184 @@
 
 ## Project Overview
 
-**odoo_vps_bi** is a Business Intelligence (BI) project built around Odoo, designed to run on a VPS environment. This repository is in its initial setup phase — no application code has been committed yet.
+**odoo_vps_bi** is an ETL pipeline that synchronizes data from **Odoo.sh** (via XML-RPC) into a local **PostgreSQL** database on a VPS, refreshed every 15 minutes, for consumption by **Power BI**.
 
-### Repository Status
-
-- **State**: Newly initialized, empty repository
-- **Remote**: Hosted via local proxy at `127.0.0.1:40632`
-- **Primary branch**: Not yet established (no commits)
+```
+Odoo.sh  ──XML-RPC──→  ETL (Python)  ──UPSERT──→  PostgreSQL VPS  ←──DirectQuery──  Power BI
+```
 
 ---
 
-## Expected Technology Stack
-
-Based on the project name and Odoo ecosystem conventions:
+## Technology Stack
 
 | Layer | Technology |
 |---|---|
-| ERP / Backend | Odoo (Python) |
-| Database | PostgreSQL |
-| Frontend | Odoo QWeb templates, JavaScript (OWL framework in Odoo 17+) |
-| Deployment | VPS (likely Docker or direct install) |
-| BI / Reporting | Odoo reporting, custom BI modules, or external tools |
+| Data source | Odoo.sh (XML-RPC API) |
+| ETL | Python 3.8+ (stdlib `xmlrpc.client` + `psycopg2`) |
+| Database | PostgreSQL 12+ |
+| Scheduling | cron or systemd timer (every 15 min) |
+| BI Frontend | Power BI (DirectQuery or Import) |
 
 ---
 
-## Project Structure (Planned)
-
-When code is added, an Odoo project typically follows this layout:
+## Project Structure
 
 ```
 odoo_vps_bi/
-├── CLAUDE.md              # This file — AI assistant guide
-├── README.md              # Project overview and setup instructions
-├── docker-compose.yml     # Container orchestration (if using Docker)
-├── Dockerfile             # Odoo container definition
-├── requirements.txt       # Python dependencies
+├── CLAUDE.md               # This file — AI assistant guide
+├── README.md               # Setup instructions and usage
+├── run_sync.py             # CLI entry point for the ETL
+├── requirements.txt        # Python dependencies (psycopg2-binary)
+├── .env.example            # Template for credentials
+├── .gitignore
 ├── config/
-│   └── odoo.conf          # Odoo server configuration
-├── addons/                # Custom Odoo modules
-│   └── bi_module/         # Example BI module
-│       ├── __init__.py
-│       ├── __manifest__.py
-│       ├── models/
-│       ├── views/
-│       ├── security/
-│       ├── data/
-│       ├── reports/
-│       └── static/
-├── scripts/               # Utility and deployment scripts
-└── tests/                 # Integration/unit tests
+│   ├── __init__.py
+│   ├── settings.py         # Reads .env, exposes all config constants
+│   └── models.py           # Defines which Odoo models/fields to sync
+├── etl/
+│   ├── __init__.py
+│   ├── odoo_client.py      # XML-RPC client with batched reads
+│   ├── pg_loader.py        # Dynamic table creation + UPSERT logic
+│   └── sync.py             # Orchestrator: incremental & full sync
+├── sql/
+│   ├── init_database.sql   # Create DB, users, permissions
+│   └── create_bi_views.sql # Denormalized views for Power BI
+├── scripts/
+│   ├── setup_cron.sh       # Install cron job (every 15 min)
+│   ├── setup_systemd.sh    # Install systemd timer (alternative)
+│   └── full_reset.sh       # Drop all & reload from scratch
+└── logs/                   # Created at runtime (gitignored)
+```
+
+---
+
+## Key Files — What They Do
+
+### `config/settings.py`
+Central configuration. Reads from `.env` file (or environment variables). Contains:
+- `ODOO_URL`, `ODOO_DB`, `ODOO_USER`, `ODOO_PASSWORD` — Odoo.sh connection
+- `PG_HOST`, `PG_PORT`, `PG_DB`, `PG_USER`, `PG_PASSWORD` — PostgreSQL connection
+- `BATCH_SIZE` — records per XML-RPC call (default 500)
+- `LOG_LEVEL` — logging verbosity
+
+### `config/models.py`
+Defines all Odoo models to sync as a list of dicts. Each entry specifies:
+- `odoo_model` / `pg_table` — source model → target table
+- `fields` — explicit field list (Many2one stored as integer ID)
+- `domain` — Odoo domain filter
+- `incremental` — if True, only fetches records changed since last sync
+- `priority` — execution order (lower = first; masters before transactional)
+
+### `etl/odoo_client.py`
+XML-RPC wrapper. Key method: `read_batched()` — generator that yields batches of records, handling pagination automatically.
+
+### `etl/pg_loader.py`
+- `ensure_table()` — creates tables dynamically from first batch (infers PG types)
+- `upsert_batch()` — `INSERT ... ON CONFLICT (id) DO UPDATE` for idempotent loads
+- `etl_sync_log` — tracks last sync timestamp per model for incremental logic
+
+### `etl/sync.py`
+Orchestrates the full pipeline. `run_sync()` iterates enabled models, applies incremental domain filter (`write_date >= last_sync`), and returns a summary dict.
+
+### `sql/create_bi_views.sql`
+Pre-built denormalized views for Power BI:
+- `bi_ventas` — sales orders + lines + partner + product
+- `bi_compras` — purchase orders + lines
+- `bi_facturas` — invoices with partner/journal
+- `bi_apuntes_contables` — journal items with account details
+- `bi_crm` — CRM pipeline with stages
+- `bi_inventario` — current stock (quants) with product/location
+- `bi_pagos` — payments with partner/journal
+- `bi_sync_status` — ETL health monitoring
+
+---
+
+## Synced Odoo Models (28 models)
+
+| Priority | Area | Models |
+|----------|------|--------|
+| 1 | Masters | `res.company`, `res.currency`, `res.currency.rate`, `res.country`, `res.country.state`, `res.users`, `account.journal` |
+| 2 | Contacts | `res.partner` |
+| 3 | Products | `product.category`, `product.template`, `product.product`, `uom.uom` |
+| 10 | Sales | `sale.order`, `sale.order.line` |
+| 11 | Purchases | `purchase.order`, `purchase.order.line` |
+| 20 | Accounting | `account.move`, `account.move.line`, `account.account` |
+| 21 | Payments | `account.payment` |
+| 30 | Inventory | `stock.warehouse`, `stock.location`, `stock.picking`, `stock.move`, `stock.quant` |
+| 40 | CRM | `crm.lead`, `crm.stage` |
+| 50 | HR | `hr.employee`, `hr.department` |
+| 60 | POS | `pos.order`, `pos.order.line` |
+
+Models that don't exist in the Odoo instance are automatically skipped.
+
+---
+
+## Common Commands
+
+```bash
+# Incremental sync (normal, every 15 min via cron)
+python run_sync.py
+
+# Full sync (first time or reset)
+python run_sync.py --full
+
+# Sync specific models only
+python run_sync.py --models sale.order account.move
+
+# List configured models
+python run_sync.py --list
+
+# Inspect available fields on an Odoo model
+python run_sync.py --inspect sale.order
+
+# Full reset (drop all tables, reload, recreate views)
+./scripts/full_reset.sh
 ```
 
 ---
 
 ## Development Conventions
 
-### Odoo Module Structure
-
-Each custom module should follow Odoo's standard layout:
-
-- `__manifest__.py` — Module metadata (name, version, dependencies, data files)
-- `__init__.py` — Python package initialization
-- `models/` — Business logic and ORM model definitions
-- `views/` — XML view definitions (form, tree, kanban, etc.)
-- `security/` — Access control (ir.model.access.csv, record rules)
-- `data/` — Default/demo data XML files
-- `reports/` — QWeb report templates
-- `static/` — Frontend assets (JS, CSS, images)
-- `wizard/` — Transient models for user wizards
-- `controllers/` — HTTP route handlers
-
 ### Python Style
+- PEP 8
+- No external dependencies beyond `psycopg2-binary` (uses stdlib `xmlrpc.client`)
+- All credentials via environment variables / `.env` — never hardcoded
+- Logging via stdlib `logging` — structured messages at INFO level
 
-- Follow PEP 8
-- Use Odoo's ORM API (v13+ new API style with `self` as recordset)
-- Avoid raw SQL unless strictly necessary for BI performance
-- Use `_inherit` for extending existing models, `_name` for new ones
-- Keep business logic in model methods, not in controllers or views
+### Adding a New Model
+1. Add entry to `config/models.py` → `MODELS` list
+2. Tables are created automatically on first sync
+3. Optionally add a `bi_*` view in `sql/create_bi_views.sql`
 
-### Naming Conventions
-
-- **Module names**: lowercase with underscores (e.g., `bi_dashboard`, `vps_analytics`)
-- **Model names**: dotted notation (e.g., `bi.report`, `bi.kpi.metric`)
-- **XML IDs**: `module_name.descriptive_id` (e.g., `bi_dashboard.view_report_form`)
-- **Python files**: lowercase with underscores matching model names
+### SQL Views
+- Views in `sql/create_bi_views.sql` are idempotent (`CREATE OR REPLACE`)
+- Use `LEFT JOIN` to handle missing related records gracefully
+- Keep column names descriptive for Power BI auto-detection
 
 ### Security
-
-- Always define access control in `security/ir.model.access.csv`
-- Use record rules for row-level security when needed
-- Never hardcode credentials — use `odoo.conf` or environment variables
-- Sanitize any user input used in raw SQL queries
-
----
-
-## Common Commands
-
-### Odoo Server
-
-```bash
-# Start Odoo (direct install)
-python odoo-bin -c config/odoo.conf
-
-# Start with specific addons path
-python odoo-bin -c config/odoo.conf --addons-path=addons
-
-# Update a specific module
-python odoo-bin -c config/odoo.conf -u bi_module -d <database_name>
-
-# Install a module
-python odoo-bin -c config/odoo.conf -i bi_module -d <database_name>
-```
-
-### Docker (if applicable)
-
-```bash
-# Start services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f odoo
-
-# Restart Odoo
-docker-compose restart odoo
-
-# Access Odoo shell
-docker-compose exec odoo odoo shell -d <database_name>
-```
-
-### Testing
-
-```bash
-# Run tests for a specific module
-python odoo-bin -c config/odoo.conf --test-enable --stop-after-init -i bi_module -d test_db
-
-# Run tests in Docker
-docker-compose exec odoo odoo --test-enable --stop-after-init -u bi_module -d test_db
-```
-
-### Database
-
-```bash
-# PostgreSQL access
-psql -U odoo -d <database_name>
-
-# Backup
-pg_dump -U odoo <database_name> > backup.sql
-
-# Restore
-psql -U odoo <database_name> < backup.sql
-```
+- `.env` is gitignored — never commit credentials
+- Use Odoo **API Keys** (not passwords) for the XML-RPC connection
+- The `powerbi_reader` PostgreSQL role has SELECT-only access
+- The `bi_user` role owns the tables and runs the ETL
 
 ---
 
-## BI-Specific Guidelines
+## Environment Configuration (.env)
 
-### Reporting and Dashboards
-
-- Use Odoo's built-in reporting engine (QWeb PDF reports) for standard reports
-- For custom BI dashboards, create dedicated view types or use `ir.actions.act_window` with custom views
-- Consider using PostgreSQL materialized views for complex aggregations
-- Cache expensive queries and refresh on a schedule
-
-### Data Models for BI
-
-- Use `_auto = False` with custom `init()` for SQL-based report models
-- Example pattern for a BI report model:
-
-```python
-from odoo import models, fields
-
-class BiSalesReport(models.Model):
-    _name = 'bi.sales.report'
-    _description = 'Sales BI Report'
-    _auto = False
-    _order = 'date desc'
-
-    date = fields.Date(readonly=True)
-    product_id = fields.Many2one('product.product', readonly=True)
-    total_amount = fields.Float(readonly=True)
-
-    def init(self):
-        self.env.cr.execute("""
-            CREATE OR REPLACE VIEW bi_sales_report AS (
-                SELECT
-                    row_number() OVER () AS id,
-                    so.date_order::date AS date,
-                    sol.product_id,
-                    SUM(sol.price_subtotal) AS total_amount
-                FROM sale_order_line sol
-                JOIN sale_order so ON so.id = sol.order_id
-                WHERE so.state IN ('sale', 'done')
-                GROUP BY so.date_order::date, sol.product_id
-            )
-        """)
-```
-
-### Performance Considerations
-
-- Index frequently filtered/grouped columns in BI queries
-- Use `read_group()` for aggregated data instead of loading full recordsets
-- Limit dashboard data to reasonable date ranges
-- Use `fields.Date.context_today()` for timezone-aware date handling
-
----
-
-## Git Workflow
-
-- Use feature branches prefixed with a descriptive name
-- Write clear, descriptive commit messages
-- Keep commits atomic — one logical change per commit
-- Do not commit secrets, credentials, or `.env` files
-
----
-
-## Environment Configuration
-
-Key settings typically managed via `odoo.conf` or environment variables:
-
-| Setting | Description |
-|---|---|
-| `db_host` | PostgreSQL host |
-| `db_port` | PostgreSQL port (default: 5432) |
-| `db_user` | Database user |
-| `db_password` | Database password |
-| `addons_path` | Comma-separated paths to addon directories |
-| `data_dir` | Odoo data/filestore directory |
-| `http_port` | Web server port (default: 8069) |
-| `admin_passwd` | Master password for database management |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ODOO_URL` | Odoo.sh instance URL | `https://mycompany.odoo.com` |
+| `ODOO_DB` | Odoo database name | — |
+| `ODOO_USER` | Odoo username | `admin` |
+| `ODOO_PASSWORD` | API Key (recommended) or password | — |
+| `PG_HOST` | PostgreSQL host | `127.0.0.1` |
+| `PG_PORT` | PostgreSQL port | `5432` |
+| `PG_DB` | Target database name | `odoo_bi` |
+| `PG_USER` | PostgreSQL user (ETL) | `bi_user` |
+| `PG_PASSWORD` | PostgreSQL password | — |
+| `ETL_BATCH_SIZE` | Records per XML-RPC call | `500` |
+| `ETL_MAX_RECORDS` | Max records per model (0=unlimited) | `0` |
+| `ETL_LOG_LEVEL` | Logging level | `INFO` |
 
 ---
 
@@ -237,19 +187,22 @@ Key settings typically managed via `odoo.conf` or environment variables:
 
 | Issue | Solution |
 |---|---|
-| Module not found | Check `addons_path` in `odoo.conf` includes your custom addons directory |
-| Access denied errors | Verify `security/ir.model.access.csv` entries and record rules |
-| Slow BI queries | Check PostgreSQL `EXPLAIN ANALYZE` output; add indexes |
-| View inheritance errors | Verify `inherit_id` XML references and module dependencies in `__manifest__.py` |
-| Assets not loading | Run `odoo-bin -u base -d <db>` to regenerate assets |
+| `ConnectionError: No se pudo autenticar` | Check `ODOO_URL`, `ODOO_DB`, `ODOO_USER`, `ODOO_PASSWORD` in `.env`. Use API Key. |
+| Model skipped ("no existe en Odoo") | The module is not installed on Odoo.sh. Set `enabled: False` in `config/models.py` or install the module. |
+| `psycopg2.OperationalError: connection refused` | PostgreSQL not running or wrong `PG_*` credentials. Check `systemctl status postgresql`. |
+| Slow sync | Reduce `ETL_BATCH_SIZE`. Check Odoo.sh plan limits. Consider running full sync off-peak. |
+| Power BI can't connect | Ensure VPS firewall allows port 5432. Check `pg_hba.conf` for remote access. Use `powerbi_reader` user. |
+| Stale data | Check `bi_sync_status` view. Verify cron is running: `crontab -l` or `systemctl status odoo-bi-sync.timer`. |
+| Missing columns after Odoo update | Run `--full` once to auto-add new columns via `ensure_table()`. |
 
 ---
 
 ## Notes for AI Assistants
 
-- This repository is newly initialized. When adding code, follow the conventions above.
-- Always read existing files before modifying them.
-- When creating Odoo modules, include all required files (`__manifest__.py`, `__init__.py`, security definitions).
-- Test module installation with `--test-enable` before considering work complete.
-- Keep BI queries efficient — prefer SQL views and `read_group()` over loading full recordsets.
-- Update this CLAUDE.md as the project structure evolves.
+- **Read before edit**: Always read existing files before modifying them.
+- **Credentials**: Never hardcode. Always use `.env` / environment variables.
+- **Incremental sync**: The system tracks `write_date` per model in `etl_sync_log`. Respect this pattern when adding models.
+- **Many2one fields**: Stored as integer IDs. To get the name, join in SQL views.
+- **One2many / Many2many**: Not synced (would require separate join tables). If needed, create a dedicated model entry.
+- **Testing**: No Odoo instance is available locally. Test by running `python run_sync.py --list` (no connection needed) or mock the XML-RPC calls.
+- **Power BI views**: Keep them in `sql/create_bi_views.sql`. Always use `CREATE OR REPLACE VIEW`. Use `LEFT JOIN` for optional relations.
